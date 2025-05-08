@@ -2,8 +2,16 @@ import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import NetInfo from '@react-native-community/netinfo';
 
-// Counter to track number of uploads
+// Counter to track number of uploads (for fallback mode only)
 let uploadCounter = 0;
+
+// API Configuration
+const API_CONFIG = {
+  // Use localhost in development, change to your server IP/domain for production
+  baseUrl: 'http://localhost:3000/api',
+  useServerWhenAvailable: true, // Set to true to use server when available
+  fallbackToLocalWhenOffline: false // Set to false to disable local processing when server is unreachable
+};
 
 // Interface for the recognition result
 interface RecognitionResult {
@@ -20,7 +28,7 @@ interface TranslationResult {
   error?: string;
 }
 
-// Mapping of keywords in filenames to specific sign predictions
+// Mapping of keywords in filenames to specific sign predictions (for fallback mode)
 const filenameToSignMap: Record<string, { prediction: string, confidence: number }> = {
   "hello": { prediction: "Hello", confidence: 0.95 },
   "thank": { prediction: "Thank you", confidence: 0.92 },
@@ -41,7 +49,7 @@ const filenameToSignMap: Record<string, { prediction: string, confidence: number
   "idontunderstand": { prediction: "I don't understand", confidence: 0.89 }
 };
 
-// Static translations for mock functionality
+// Static translations for fallback functionality
 const englishToVietnameseMap: Record<string, string> = {
   "Hello": "Xin chào",
   "Thank you": "Cảm ơn bạn",
@@ -64,7 +72,7 @@ const englishToVietnameseMap: Record<string, string> = {
 };
 
 /**
- * Mock service for sign language recognition (no server required)
+ * Sign Language Recognition API service
  */
 export default {
   /**
@@ -104,17 +112,46 @@ export default {
       return false;
     }
   },
+  
+  /**
+   * Check if the recognition server is available
+   * @returns Promise with server status
+   */
+  async checkServerAvailability(): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      
+      const response = await fetch(`${API_CONFIG.baseUrl}/health`, {
+        method: 'GET',
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Server status:', data);
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('Server availability check failed:', error);
+      return false;
+    }
+  },
 
   /**
-   * Process a video for sign language recognition (mock implementation)
+   * Process a video for sign language recognition
    * @param videoUri URI to the video file
    * @param isRecorded Optional flag to indicate if the video was recorded by the user
    * @param skipConnectionCheck Optional flag to skip the connection check
-   * @returns Promise with the mock recognition result
+   * @returns Promise with the recognition result
    */
   async processVideo(videoUri: string, isRecorded: boolean = false, skipConnectionCheck: boolean = false): Promise<RecognitionResult> {
     try {
-      console.log(`Processing video locally (mock): ${videoUri}`);
+      console.log(`Processing video: ${videoUri}`);
       
       // Check for internet connection first (unless we're skipping this check)
       if (!skipConnectionCheck) {
@@ -135,63 +172,22 @@ export default {
       
       console.log(`File size: ${fileInfo.size} bytes`);
       
-      // If the video was recorded by the user, always return "Hello"
-      if (isRecorded) {
+      // Extract the filename for logging
+      const filename = videoUri.split('/').pop() || '';
+      console.log(`Video submitted: ${filename}`);
+      
+      // Check if the server is available
+      const isServerAvailable = await this.checkServerAvailability();
+      if (!isServerAvailable) {
         return {
-          success: true,
-          prediction: "Hello",
-          confidence: 0.98
+          success: false,
+          error: 'Recognition server is not available. Please try again later.'
         };
       }
       
-      // For uploaded videos, use the upload counter to determine which sign to return
-      // Increment counter for each upload
-      uploadCounter++;
-      console.log(`Upload counter: ${uploadCounter}`);
-      
-      // Based on upload order
-      if (uploadCounter === 1) {
-        console.log('First upload: How are you?');
-        return {
-          success: true,
-          prediction: "How are you?",
-          confidence: 0.91
-        };
-      } else if (uploadCounter === 2) {
-        console.log('Second upload: I don\'t understand');
-        return {
-          success: true,
-          prediction: "I don't understand",
-          confidence: 0.89
-        };
-      } else {
-        // For third and subsequent uploads, use the filename approach as fallback
-        const filename = videoUri.split('/').pop() || '';
-        const filenameLower = filename.toLowerCase();
-        
-        console.log(`Video submitted: ${filename}`);
-        
-        // Remove file extension before matching
-        const filenameWithoutExt = filenameLower.replace(/\.\w+$/, '');
-        
-        // Look for keywords in the filename without extension
-        for (const [keyword, signInfo] of Object.entries(filenameToSignMap)) {
-          if (filenameWithoutExt.includes(keyword)) {
-            return {
-              success: true,
-              prediction: signInfo.prediction,
-              confidence: signInfo.confidence
-            };
-          }
-        }
-        
-        // Default response if no match found
-        return {
-          success: true,
-          prediction: "Unknown Sign",
-          confidence: 0.6
-        };
-      }
+      // Use server for recognition
+      console.log('Using server for recognition');
+      return await this.processVideoWithServer(videoUri, isRecorded);
     } catch (error: any) {
       console.error('Error processing video:', error.message);
       
@@ -204,7 +200,125 @@ export default {
   },
   
   /**
-   * Translate text to Vietnamese (mock implementation)
+   * Process video using the remote server
+   * @param videoUri Video URI
+   * @param isRecorded Whether video was recorded
+   */
+  async processVideoWithServer(videoUri: string, isRecorded: boolean): Promise<RecognitionResult> {
+    try {
+      // Create form data for file upload
+      const formData = new FormData();
+      
+      // Add the video file
+      // Note: We need to give a proper name with file extension for multer to work correctly
+      const fileExtension = videoUri.split('.').pop() || 'mp4';
+      const fileName = `video_${Date.now()}.${fileExtension}`;
+      
+      // @ts-ignore - This is a react-native specific FormData format
+      formData.append('video', {
+        uri: Platform.OS === 'ios' ? videoUri.replace('file://', '') : videoUri,
+        name: fileName,
+        type: `video/${fileExtension}`
+      });
+      
+      // Add metadata
+      formData.append('isRecorded', isRecorded.toString());
+      
+      // Send the request
+      const response = await fetch(`${API_CONFIG.baseUrl}/recognize`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'multipart/form-data'
+        },
+      });
+      
+      const result = await response.json();
+      
+      if (response.ok && result.success) {
+        return {
+          success: true,
+          prediction: result.prediction,
+          confidence: result.confidence
+        };
+      } else {
+        throw new Error(result.error || 'Failed to process video on server');
+      }
+    } catch (error: any) {
+      console.error('Server processing error:', error);
+      
+      return {
+        success: false,
+        error: error.message || 'Failed to process video on the server'
+      };
+    }
+  },
+  
+  /**
+   * Fallback local processing (same as the old implementation)
+   * @param videoUri Video URI
+   * @param isRecorded Whether video was recorded
+   */
+  processVideoLocally(videoUri: string, isRecorded: boolean): RecognitionResult {
+    // If the video was recorded by the user, always return "Hello"
+    if (isRecorded) {
+      return {
+        success: true,
+        prediction: "Hello",
+        confidence: 0.98
+      };
+    }
+    
+    // For uploaded videos, use the upload counter for testing specific signs
+    uploadCounter++;
+    console.log(`Upload counter: ${uploadCounter}`);
+    
+    // Based on upload order
+    if (uploadCounter === 1) {
+      console.log('First upload: How are you?');
+      return {
+        success: true,
+        prediction: "How are you?",
+        confidence: 0.91
+      };
+    } else if (uploadCounter === 2) {
+      console.log('Second upload: I don\'t understand');
+      return {
+        success: true,
+        prediction: "I don't understand",
+        confidence: 0.89
+      };
+    } else {
+      // For third and subsequent uploads, use the filename approach as fallback
+      const filename = videoUri.split('/').pop() || '';
+      const filenameLower = filename.toLowerCase();
+      
+      // Remove file extension before matching
+      const filenameWithoutExt = filenameLower.replace(/\.\w+$/, '');
+      
+      // Look for keywords in the filename without extension
+      for (const [keyword, signInfo] of Object.entries(filenameToSignMap)) {
+        if (filenameWithoutExt.includes(keyword)) {
+          return {
+            success: true,
+            prediction: signInfo.prediction,
+            confidence: signInfo.confidence
+          };
+        }
+      }
+      
+      // Default response if no match found
+      return {
+        success: true,
+        prediction: "Unknown Sign",
+        confidence: 0.6
+      };
+    }
+  },
+  
+  /**
+   * Translate text to Vietnamese
    * @param text Text to translate
    * @returns Promise with the translation result
    */
@@ -219,20 +333,18 @@ export default {
         };
       }
       
-      // Use local mapping for mock implementation
-      if (englishToVietnameseMap[text]) {
+      // Check if the server is available
+      const isServerAvailable = await this.checkServerAvailability();
+      if (!isServerAvailable) {
         return {
-          success: true,
-          translatedText: englishToVietnameseMap[text]
+          success: false,
+          error: 'Translation server is not available. Please try again later.'
         };
       }
       
-      // If not in our predefined list, return a generic response
-      // In a real implementation, this would call a translation API
-      return {
-        success: true,
-        translatedText: `[${text} - Bản dịch tiếng Việt]`
-      };
+      // Use server for translation
+      console.log('Using server for translation');
+      return await this.translateWithServer(text);
     } catch (error: any) {
       console.error('Error translating text:', error.message);
       
@@ -245,17 +357,84 @@ export default {
   },
   
   /**
-   * Check if the local mock service is running (always returns true)
-   * @returns Promise with mock server status
+   * Translate text using the server
+   * @param text Text to translate
+   */
+  async translateWithServer(text: string): Promise<TranslationResult> {
+    try {
+      const response = await fetch(`${API_CONFIG.baseUrl}/translate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          text,
+          targetLanguage: 'vi'
+        })
+      });
+      
+      const result = await response.json();
+      
+      if (response.ok && result.success) {
+        return {
+          success: true,
+          translatedText: result.translatedText
+        };
+      } else {
+        throw new Error(result.error || 'Failed to translate text on server');
+      }
+    } catch (error: any) {
+      console.error('Server translation error:', error);
+      
+      return {
+        success: false,
+        error: error.message || 'Failed to translate text on the server'
+      };
+    }
+  },
+  
+  /**
+   * Local fallback translation
+   * @param text Text to translate
+   */
+  translateLocally(text: string): TranslationResult {
+    if (englishToVietnameseMap[text]) {
+      return {
+        success: true,
+        translatedText: englishToVietnameseMap[text]
+      };
+    }
+    
+    // Generic translation for unknown texts
+    return {
+      success: true,
+      translatedText: `[${text} - Bản dịch tiếng Việt]`
+    };
+  },
+  
+  /**
+   * Check if the remote server is running and available
+   * @returns Promise with server status
    */
   async checkServerStatus() {
     // Check for internet connection
     const hasConnection = await this.checkConnection();
+    if (!hasConnection) {
+      return {
+        isRunning: false,
+        message: 'No internet connection',
+        modelAvailable: false
+      };
+    }
+    
+    // Check server availability
+    const isServerAvailable = await this.checkServerAvailability();
     
     return { 
-      isRunning: hasConnection, 
-      message: hasConnection ? 'Mock service running' : 'No internet connection',
-      modelAvailable: hasConnection
+      isRunning: isServerAvailable,
+      message: isServerAvailable ? 'Recognition server is running' : 'Server not available. Please try again later.',
+      modelAvailable: isServerAvailable // Model is only available if server is running
     };
   },
   
@@ -271,11 +450,15 @@ export default {
       const isConnected = await this.checkConnection();
       console.log('Connection check result:', isConnected);
       
+      const isServerAvailable = await this.checkServerAvailability();
+      console.log('Server availability:', isServerAvailable);
+      
       return {
         netInfoConnected: netInfoState.isConnected,
         netInfoType: netInfoState.type,
         fetchSuccessful: isConnected,
-        overallResult: isConnected
+        serverAvailable: isServerAvailable,
+        mode: isServerAvailable ? 'server' : 'offline'
       };
     } catch (error) {
       console.error('Test connection error:', error);
@@ -283,7 +466,8 @@ export default {
         error: error?.toString(),
         netInfoConnected: false,
         fetchSuccessful: false,
-        overallResult: false
+        serverAvailable: false,
+        mode: 'error'
       };
     }
   }
