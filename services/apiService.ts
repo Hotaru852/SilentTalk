@@ -10,6 +10,13 @@ interface RecognitionResult {
   error?: string;
 }
 
+// Interface for translation result
+interface TranslationResult {
+  success: boolean;
+  translatedText?: string;
+  error?: string;
+}
+
 // Mapping of keywords in filenames to specific sign predictions
 const filenameToSignMap: Record<string, { prediction: string, confidence: number }> = {
   "hello": { prediction: "Hello", confidence: 0.95 },
@@ -27,6 +34,26 @@ const filenameToSignMap: Record<string, { prediction: string, confidence: number
   "name": { prediction: "Name", confidence: 0.84 },
   "time": { prediction: "Time", confidence: 0.85 },
   "school": { prediction: "School", confidence: 0.86 }
+};
+
+// Static translations for mock functionality
+const englishToVietnameseMap: Record<string, string> = {
+  "Hello": "Xin chào",
+  "Thank you": "Cảm ơn bạn",
+  "Goodbye": "Tạm biệt",
+  "Yes": "Vâng / Có",
+  "No": "Không",
+  "Please": "Xin vui lòng",
+  "Help": "Giúp đỡ",
+  "I love you": "Tôi yêu bạn",
+  "Friend": "Bạn bè",
+  "Family": "Gia đình",
+  "Hungry": "Đói",
+  "Drink": "Uống",
+  "Name": "Tên",
+  "Time": "Thời gian",
+  "School": "Trường học",
+  "Unknown Sign": "Ký hiệu không xác định"
 };
 
 /**
@@ -129,6 +156,47 @@ export default {
       return {
         success: false,
         error: error.message || 'Failed to process video'
+      };
+    }
+  },
+  
+  /**
+   * Translate text to Vietnamese (mock implementation)
+   * @param text Text to translate
+   * @returns Promise with the translation result
+   */
+  async translateToVietnamese(text: string): Promise<TranslationResult> {
+    try {
+      // Check for internet connection first
+      const hasConnection = await this.checkConnection();
+      if (!hasConnection) {
+        return {
+          success: false,
+          error: 'No internet connection. Translation requires internet access.'
+        };
+      }
+      
+      // Use local mapping for mock implementation
+      if (englishToVietnameseMap[text]) {
+        return {
+          success: true,
+          translatedText: englishToVietnameseMap[text]
+        };
+      }
+      
+      // If not in our predefined list, return a generic response
+      // In a real implementation, this would call a translation API
+      return {
+        success: true,
+        translatedText: `[${text} - Bản dịch tiếng Việt]`
+      };
+    } catch (error: any) {
+      console.error('Error translating text:', error.message);
+      
+      // Return error response
+      return {
+        success: false,
+        error: error.message || 'Failed to translate text'
       };
     }
   },

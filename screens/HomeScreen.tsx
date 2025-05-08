@@ -37,6 +37,8 @@ export default function HomeScreen() {
     status: 'ready' | 'processing' | 'offline';
     modelAvailable: boolean;
   }>({ status: 'ready', modelAvailable: true });
+  const [translatedText, setTranslatedText] = useState<string | null>(null);
+  const [isTranslating, setIsTranslating] = useState(false);
   const cameraRef = useRef<Camera | null>(null);
 
   // Animated spin value and loop reference
@@ -293,6 +295,7 @@ export default function HomeScreen() {
   // Close modal and reactivate camera
   const closeModal = () => {
     setModalVisible(false);
+    setTranslatedText(null); // Reset translation when closing modal
     setTimeout(() => {
       setIsCameraActive(true);
     }, 300);
@@ -331,6 +334,27 @@ export default function HomeScreen() {
         status: 'offline',
         modelAvailable: false
       });
+    }
+  };
+
+  // Translate the recognition result to Vietnamese
+  const translateToVietnamese = async () => {
+    if (!recognitionResult) return;
+    
+    try {
+      setIsTranslating(true);
+      const result = await apiService.translateToVietnamese(recognitionResult);
+      
+      if (result.success) {
+        setTranslatedText(result.translatedText || null);
+      } else {
+        Alert.alert('Translation Error', result.error || 'Failed to translate');
+      }
+    } catch (error) {
+      console.error('Translation error:', error);
+      Alert.alert('Error', 'Failed to translate text');
+    } finally {
+      setIsTranslating(false);
     }
   };
 
@@ -449,12 +473,34 @@ export default function HomeScreen() {
                     Confidence: {(confidence * 100).toFixed(2)}%
                   </Text>
                 )}
-                <TouchableOpacity
-                  style={styles.modalCloseButton}
-                  onPress={closeModal}
-                >
-                  <Text style={styles.modalCloseButtonText}>Close</Text>
-                </TouchableOpacity>
+                
+                {translatedText && (
+                  <View style={styles.translationContainer}>
+                    <Text style={styles.translationLabel}>Vietnamese:</Text>
+                    <Text style={styles.translationText}>{translatedText}</Text>
+                  </View>
+                )}
+                
+                <View style={styles.modalButtonsContainer}>
+                  <TouchableOpacity
+                    style={[styles.modalButton, styles.translateButton]}
+                    onPress={translateToVietnamese}
+                    disabled={isTranslating || !recognitionResult}
+                  >
+                    {isTranslating ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text style={styles.modalButtonText}>Translate to Vietnamese</Text>
+                    )}
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={[styles.modalButton, styles.closeButton]}
+                    onPress={closeModal}
+                  >
+                    <Text style={styles.modalCloseButtonText}>Close</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             </TouchableWithoutFeedback>
           </View>
@@ -562,16 +608,50 @@ const styles = StyleSheet.create({
     marginTop: 10,
     textAlign: 'center',
   },
-  modalCloseButton: {
+  modalButtonsContainer: {
+    flexDirection: 'column',
+    width: '100%',
     marginTop: 20,
+  },
+  modalButton: {
+    marginVertical: 5,
     paddingVertical: 10,
     paddingHorizontal: 20,
-    backgroundColor: '#e7a1a7',
     borderRadius: 20,
+    alignItems: 'center',
+    width: '100%',
+  },
+  translateButton: {
+    backgroundColor: '#4CAF50',
+  },
+  closeButton: {
+    backgroundColor: '#e7a1a7',
+  },
+  modalButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
   modalCloseButtonText: {
     color: 'black',
     fontSize: 16,
+    fontWeight: 'bold',
+  },
+  translationContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 15,
+    width: '100%',
+  },
+  translationLabel: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 14,
+    marginBottom: 5,
+  },
+  translationText: {
+    color: 'white',
+    fontSize: 18,
     fontWeight: 'bold',
   },
   serverStatusContainer: {
