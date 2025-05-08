@@ -11,29 +11,66 @@ import {
   Modal,
   BackHandler,
   TouchableWithoutFeedback,
-  Platform
+  Platform,
+  Alert,
+  ActivityIndicator
 } from 'react-native';
-import { Camera } from 'expo-camera';
+import { Camera, CameraType } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as MediaLibrary from 'expo-media-library';
+import apiService from '../services/apiService';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 export default function HomeScreen() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
-  const [cameraType, setCameraType] = useState(Camera.Constants.Type.front);
+  const [cameraType, setCameraType] = useState<CameraType>(CameraType.front);
   const [isRecording, setIsRecording] = useState(false);
   const [video, setVideo] = useState<any>(null);
   const [processing, setProcessing] = useState(false);
   const [recognitionResult, setRecognitionResult] = useState<string | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [isCameraActive, setIsCameraActive] = useState(true);
+  const [confidence, setConfidence] = useState<number | null>(null);
+  const [serverStatus, setServerStatus] = useState<{
+    status: 'ready' | 'processing' | 'offline';
+    modelAvailable: boolean;
+  }>({ status: 'ready', modelAvailable: true });
   const cameraRef = useRef<Camera | null>(null);
 
   // Animated spin value and loop reference
   const spinValue = useRef(new Animated.Value(0)).current;
   const spinLoop = useRef<Animated.CompositeAnimation | null>(null);
+
+  // Set mock service status on mount
+  useEffect(() => {
+    const initMockService = async () => {
+      try {
+        const status = await apiService.checkServerStatus();
+        setServerStatus({
+          status: status.isRunning ? 'ready' : 'offline',
+          modelAvailable: status.modelAvailable
+        });
+        
+        if (!status.isRunning) {
+          Alert.alert(
+            'No Internet Connection',
+            'The sign recognition model requires internet access. Please connect to the internet and try again.',
+            [{ text: 'OK' }]
+          );
+        }
+      } catch (error) {
+        console.error("Error initializing mock service:", error);
+        setServerStatus({
+          status: 'offline',
+          modelAvailable: false
+        });
+      }
+    };
+    
+    initMockService();
+  }, []);
 
   // Handle Android back button to close modal
   useEffect(() => {
@@ -103,20 +140,20 @@ export default function HomeScreen() {
 
     if (!result.canceled) {
       setVideo(result.assets[0]);
-      simulateRecognition();
+      processVideo(result.assets[0].uri);
     }
   };
 
   // Toggle between front and back cameras
   const toggleCameraType = () => {
     setCameraType(current =>
-      current === Camera.Constants.Type.back
-        ? Camera.Constants.Type.front
-        : Camera.Constants.Type.back
+      current === CameraType.back
+        ? CameraType.front
+        : CameraType.back
     );
   };
 
-  // Start/stop video recording
+  // Toggle recording
   const toggleRecording = async () => {
     if (isRecording) {
       cameraRef.current?.stopRecording();
@@ -125,25 +162,132 @@ export default function HomeScreen() {
       setRecognitionResult(null);
       if (cameraRef.current) {
         setIsRecording(true);
-        const recorded = await cameraRef.current.recordAsync({
-          maxDuration: 10,
-          quality: '720p',
-        });
-        setVideo(recorded);
-        simulateRecognition();
+        try {
+          const recorded = await cameraRef.current.recordAsync({
+            maxDuration: 10,
+            quality: '720p',
+          });
+          setVideo(recorded);
+          processVideoRecorded(recorded.uri);
+        } catch (error) {
+          console.error('Recording error:', error);
+          setIsRecording(false);
+          Alert.alert(
+            'Recording Error',
+            'Failed to record video. Please try again.',
+            [{ text: 'OK' }]
+          );
+        }
       }
     }
   };
 
-  // Simulate recognition process
-  const simulateRecognition = () => {
-    setProcessing(true);
-    setTimeout(() => {
+  // Process video from gallery
+  const processVideo = async (videoUri: string) => {
+    try {
+      setProcessing(true);
+      setServerStatus({
+        status: 'processing',
+        modelAvailable: true
+      });
+      
+      // Call the mock service to process the video (not recorded)
+      const result = await apiService.processVideo(videoUri, false);
+      
+      // Always wait exactly 5 seconds for the loading animation regardless of processing time
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      if (result.success) {
+        setRecognitionResult(result.prediction);
+        setConfidence(result.confidence);
+      } else {
+        setRecognitionResult(result.error || 'Error: Unable to recognize sign');
+        setConfidence(null);
+      }
+      
       setProcessing(false);
-      setRecognitionResult('Hello');
       setIsCameraActive(false);
       setModalVisible(true);
-    }, 2000);
+      
+      // Update server status if there was a connection issue
+      if (!result.success && result.error?.includes('internet')) {
+        setServerStatus({
+          status: 'offline',
+          modelAvailable: false
+        });
+      } else {
+        setServerStatus({
+          status: 'ready',
+          modelAvailable: true
+        });
+      }
+    } catch (error) {
+      console.error('Error processing video:', error);
+      setProcessing(false);
+      Alert.alert(
+        'Error',
+        'Failed to process video. Please try again.',
+        [{ text: 'OK' }]
+      );
+      setServerStatus({
+        status: 'ready',
+        modelAvailable: true
+      });
+    }
+  };
+
+  // Process recorded video
+  const processVideoRecorded = async (videoUri: string) => {
+    try {
+      setProcessing(true);
+      setServerStatus({
+        status: 'processing',
+        modelAvailable: true
+      });
+      
+      // Call the mock service to process the video (with isRecorded=true)
+      const result = await apiService.processVideo(videoUri, true);
+      
+      // Always wait exactly 5 seconds for the loading animation regardless of processing time
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      if (result.success) {
+        setRecognitionResult(result.prediction);
+        setConfidence(result.confidence);
+      } else {
+        setRecognitionResult(result.error || 'Error: Unable to recognize sign');
+        setConfidence(null);
+      }
+      
+      setProcessing(false);
+      setIsCameraActive(false);
+      setModalVisible(true);
+      
+      // Update server status if there was a connection issue
+      if (!result.success && result.error?.includes('internet')) {
+        setServerStatus({
+          status: 'offline',
+          modelAvailable: false
+        });
+      } else {
+        setServerStatus({
+          status: 'ready',
+          modelAvailable: true
+        });
+      }
+    } catch (error) {
+      console.error('Error processing video:', error);
+      setProcessing(false);
+      Alert.alert(
+        'Error',
+        'Failed to process video. Please try again.',
+        [{ text: 'OK' }]
+      );
+      setServerStatus({
+        status: 'ready',
+        modelAvailable: true
+      });
+    }
   };
 
   // Close modal and reactivate camera
@@ -152,6 +296,42 @@ export default function HomeScreen() {
     setTimeout(() => {
       setIsCameraActive(true);
     }, 300);
+  };
+
+  // Add a reconnect function to check internet connection
+  const checkInternetConnection = async () => {
+    setServerStatus({
+      status: 'processing',
+      modelAvailable: false
+    });
+    
+    try {
+      const status = await apiService.checkServerStatus();
+      setServerStatus({
+        status: status.isRunning ? 'ready' : 'offline',
+        modelAvailable: status.modelAvailable
+      });
+      
+      if (status.isRunning) {
+        Alert.alert(
+          'Connected',
+          'Internet connection restored. The sign recognition model is now available.',
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert(
+          'No Internet Connection',
+          'Unable to connect to the internet. The sign recognition model requires internet access.',
+          [{ text: 'OK' }]
+        );
+      }
+    } catch (error) {
+      console.error('Connection check failed:', error);
+      setServerStatus({
+        status: 'offline',
+        modelAvailable: false
+      });
+    }
   };
 
   // Permission states rendering
@@ -174,6 +354,33 @@ export default function HomeScreen() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="black" />
+
+      {/* Local processing status indicator */}
+      <View style={styles.serverStatusContainer}>
+        <View style={[
+          styles.statusIndicator,
+          serverStatus.status === 'ready' 
+            ? styles.statusOnline 
+            : serverStatus.status === 'offline'
+              ? styles.statusOffline
+              : styles.statusChecking
+        ]} />
+        <Text style={styles.statusText}>
+          Status: {
+            serverStatus.status === 'ready' 
+              ? 'Ready' 
+              : serverStatus.status === 'offline'
+                ? 'No Internet'
+                : 'Processing...'
+          }
+        </Text>
+        {serverStatus.status === 'processing' && <ActivityIndicator size="small" color="#fff" />}
+        {serverStatus.status === 'offline' && (
+          <TouchableOpacity onPress={checkInternetConnection} style={styles.reconnectButton}>
+            <Text style={styles.reconnectText}>Retry</Text>
+          </TouchableOpacity>
+        )}
+      </View>
 
       {isCameraActive ? (
         <Camera
@@ -198,11 +405,17 @@ export default function HomeScreen() {
 
           <View style={styles.controlBarContainer}>
             <View style={styles.controlBar}>
-              <TouchableOpacity style={styles.controlButton} onPress={pickVideo}>
+              <TouchableOpacity 
+                style={styles.controlButton} 
+                onPress={pickVideo}
+              >
                 <MaterialIcons name="photo-library" size={32} color="black" />
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.recordButton} onPress={toggleRecording}>
+              <TouchableOpacity 
+                style={styles.recordButton} 
+                onPress={toggleRecording}
+              >
                 <MaterialCommunityIcons
                   name={isRecording ? "stop" : "camera-iris"}
                   size={38}
@@ -226,17 +439,26 @@ export default function HomeScreen() {
         visible={modalVisible}
         onRequestClose={closeModal}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalResultText}>{recognitionResult}</Text>
-            <TouchableOpacity
-              style={styles.modalCloseButton}
-              onPress={closeModal}
-            >
-              <Text style={styles.modalCloseButtonText}>Close</Text>
-            </TouchableOpacity>
+        <TouchableWithoutFeedback onPress={closeModal}>
+          <View style={styles.modalOverlay}>
+            <TouchableWithoutFeedback onPress={e => e.stopPropagation()}>
+              <View style={styles.modalContent}>
+                <Text style={styles.modalResultText}>{recognitionResult}</Text>
+                {confidence !== null && (
+                  <Text style={styles.confidenceText}>
+                    Confidence: {(confidence * 100).toFixed(2)}%
+                  </Text>
+                )}
+                <TouchableOpacity
+                  style={styles.modalCloseButton}
+                  onPress={closeModal}
+                >
+                  <Text style={styles.modalCloseButtonText}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            </TouchableWithoutFeedback>
           </View>
-        </View>
+        </TouchableWithoutFeedback>
       </Modal>
     </View>
   );
@@ -249,108 +471,149 @@ const styles = StyleSheet.create({
   },
   camera: {
     flex: 1,
-    justifyContent: 'flex-end',
+  },
+  text: {
+    color: 'white',
+    fontSize: 18,
+    textAlign: 'center',
+    padding: 20,
   },
   controlBarContainer: {
+    position: 'absolute',
+    bottom: 40,
     width: '100%',
     alignItems: 'center',
-    marginBottom: 30,
   },
   controlBar: {
     flexDirection: 'row',
-    justifyContent: 'space-evenly',
+    backgroundColor: 'rgba(231, 161, 167, 0.7)',
+    borderRadius: 30,
+    paddingVertical: 15,
+    paddingHorizontal: 25,
+    justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#eebdc1',
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-    borderRadius: 40,
-    width: SCREEN_WIDTH * 0.65,
+    width: SCREEN_WIDTH * 0.8,
   },
   controlButton: {
-    width: 55,
-    height: 55,
-    borderRadius: 27.5,
+    width: 50,
+    height: 50,
+    borderRadius: 25,
     justifyContent: 'center',
     alignItems: 'center',
   },
   recordButton: {
-    width: 65,
-    height: 65,
-    borderRadius: 32.5,
+    width: 70,
+    height: 70,
+    borderRadius: 35,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: 'white',
     marginHorizontal: 15,
-  },
-  text: {
-    color: 'white',
-    fontSize: 16,
-    textAlign: 'center',
-    marginTop: 20,
   },
   processingOverlay: {
     ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    zIndex: 10,
   },
   processingIndicatorContainer: {
-    width: 80,
-    height: 80,
+    width: 120,
+    height: 120,
     justifyContent: 'center',
     alignItems: 'center',
-    position: 'relative',
   },
   rotatingRing: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    borderWidth: 6,
-    borderColor: 'rgba(255, 0, 0, 0.5)',
-    borderBottomColor: 'red',
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    borderWidth: 8,
+    borderColor: 'rgba(231, 161, 167, 0.5)',
+    borderBottomColor: 'rgba(231, 161, 167, 1)',
     position: 'absolute',
   },
   overlappingProcessingText: {
     color: 'white',
-    fontSize: 14,
-    fontWeight: '500',
-    zIndex: 2,
-    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'black',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalContent: {
-    width: '100%',
+    backgroundColor: '#2a2a2a',
+    borderRadius: 10,
+    padding: 20,
+    width: '80%',
     alignItems: 'center',
-    justifyContent: 'center',
-    padding: 30,
   },
   modalResultText: {
     color: 'white',
-    fontSize: 48,
+    fontSize: 24,
     fontWeight: 'bold',
-    marginBottom: 50,
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  confidenceText: {
+    fontSize: 16,
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginTop: 10,
     textAlign: 'center',
   },
   modalCloseButton: {
-    backgroundColor: '#eebdc1',
-    paddingVertical: 20,
-    paddingHorizontal: 60,
-    borderRadius: 15,
-    marginTop: 30,
-    elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.8,
-    shadowRadius: 2,
+    marginTop: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    backgroundColor: '#e7a1a7',
+    borderRadius: 20,
   },
   modalCloseButtonText: {
-    color: 'white',
-    fontSize: 24,
+    color: 'black',
+    fontSize: 16,
     fontWeight: 'bold',
+  },
+  serverStatusContainer: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    zIndex: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 15,
+  },
+  statusIndicator: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 5,
+  },
+  statusOnline: {
+    backgroundColor: '#4CAF50',
+  },
+  statusChecking: {
+    backgroundColor: '#FFC107',
+  },
+  statusText: {
+    color: 'white',
+    fontSize: 12,
+  },
+  statusOffline: {
+    backgroundColor: '#F44336', // Red color for offline status
+  },
+  reconnectButton: {
+    marginLeft: 5,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 5,
+  },
+  reconnectText: {
+    color: 'white',
+    fontSize: 10,
   },
 });
