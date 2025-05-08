@@ -19,6 +19,7 @@ import { Camera, CameraType } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as MediaLibrary from 'expo-media-library';
+import NetInfo from '@react-native-community/netinfo';
 import apiService from '../services/apiService';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
@@ -73,6 +74,57 @@ export default function HomeScreen() {
     
     initMockService();
   }, []);
+
+  // Network connection listener
+  useEffect(() => {
+    // Subscribe to network state updates
+    const unsubscribe = NetInfo.addEventListener(state => {
+      console.log("Connection state changed:", state);
+      
+      const isConnected = state.isConnected && 
+        (state.type === 'cellular' || state.type === 'wifi');
+      
+      // Update server status based on connection state
+      setServerStatus(prevStatus => {
+        // Only update if connection state actually changed
+        // or if we're currently in 'processing' state
+        if ((isConnected && prevStatus.status === 'offline') || 
+            (!isConnected && prevStatus.status === 'ready') ||
+            prevStatus.status === 'processing') {
+          
+          return {
+            status: isConnected ? 'ready' : 'offline',
+            modelAvailable: isConnected
+          };
+        }
+        
+        // No change needed
+        return prevStatus;
+      });
+      
+      // Show an alert if connection is lost while not processing
+      if (!isConnected && serverStatus.status === 'ready') {
+        Alert.alert(
+          'Connection Lost',
+          'Internet connection lost. The sign recognition model requires internet access.',
+          [{ text: 'OK' }]
+        );
+      } 
+      // Show reconnected message if connection is restored
+      else if (isConnected && serverStatus.status === 'offline') {
+        Alert.alert(
+          'Connected',
+          'Internet connection restored. The sign recognition model is now available.',
+          [{ text: 'OK' }]
+        );
+      }
+    });
+
+    // Clean up the listener on component unmount
+    return () => {
+      unsubscribe();
+    };
+  }, [serverStatus.status]);
 
   // Handle Android back button to close modal
   useEffect(() => {
@@ -134,6 +186,16 @@ export default function HomeScreen() {
 
   // Pick video from library
   const pickVideo = async () => {
+    // Check current connection status
+    if (serverStatus.status === 'offline') {
+      Alert.alert(
+        'No Internet Connection',
+        'The sign recognition model requires internet access. Please connect to the internet and try again.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Videos,
       allowsEditing: true,
@@ -141,6 +203,11 @@ export default function HomeScreen() {
     });
 
     if (!result.canceled) {
+      console.log('Selected video:', result.assets[0]);
+      console.log('File URI:', result.assets[0].uri);
+      const filename = result.assets[0].uri.split('/').pop() || '';
+      console.log('Extracted filename:', filename);
+      
       setVideo(result.assets[0]);
       processVideo(result.assets[0].uri);
     }
@@ -161,6 +228,16 @@ export default function HomeScreen() {
       cameraRef.current?.stopRecording();
       setIsRecording(false);
     } else {
+      // Check current connection status
+      if (serverStatus.status === 'offline') {
+        Alert.alert(
+          'No Internet Connection',
+          'The sign recognition model requires internet access. Please connect to the internet and try again.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      
       setRecognitionResult(null);
       if (cameraRef.current) {
         setIsRecording(true);
@@ -193,8 +270,9 @@ export default function HomeScreen() {
         modelAvailable: true
       });
       
-      // Call the mock service to process the video (not recorded)
-      const result = await apiService.processVideo(videoUri, false);
+      // Call the mock service to process the video with skipConnectionCheck=true
+      // since we've already checked connection before getting here
+      const result = await apiService.processVideo(videoUri, false, true);
       
       // Always wait exactly 5 seconds for the loading animation regardless of processing time
       await new Promise(resolve => setTimeout(resolve, 5000));
@@ -211,18 +289,11 @@ export default function HomeScreen() {
       setIsCameraActive(false);
       setModalVisible(true);
       
-      // Update server status if there was a connection issue
-      if (!result.success && result.error?.includes('internet')) {
-        setServerStatus({
-          status: 'offline',
-          modelAvailable: false
-        });
-      } else {
-        setServerStatus({
-          status: 'ready',
-          modelAvailable: true
-        });
-      }
+      // Update server status based on the result
+      setServerStatus({
+        status: 'ready',
+        modelAvailable: true
+      });
     } catch (error) {
       console.error('Error processing video:', error);
       setProcessing(false);
@@ -247,8 +318,9 @@ export default function HomeScreen() {
         modelAvailable: true
       });
       
-      // Call the mock service to process the video (with isRecorded=true)
-      const result = await apiService.processVideo(videoUri, true);
+      // Call the mock service to process the video with skipConnectionCheck=true
+      // since we've already checked connection before getting here
+      const result = await apiService.processVideo(videoUri, true, true);
       
       // Always wait exactly 5 seconds for the loading animation regardless of processing time
       await new Promise(resolve => setTimeout(resolve, 5000));
@@ -265,18 +337,11 @@ export default function HomeScreen() {
       setIsCameraActive(false);
       setModalVisible(true);
       
-      // Update server status if there was a connection issue
-      if (!result.success && result.error?.includes('internet')) {
-        setServerStatus({
-          status: 'offline',
-          modelAvailable: false
-        });
-      } else {
-        setServerStatus({
-          status: 'ready',
-          modelAvailable: true
-        });
-      }
+      // Update server status based on the result
+      setServerStatus({
+        status: 'ready',
+        modelAvailable: true
+      });
     } catch (error) {
       console.error('Error processing video:', error);
       setProcessing(false);
@@ -309,13 +374,40 @@ export default function HomeScreen() {
     });
     
     try {
-      const status = await apiService.checkServerStatus();
+      // Get current network state
+      const state = await NetInfo.fetch();
+      const isNetInfoConnected = state.isConnected && 
+        (state.type === 'cellular' || state.type === 'wifi');
+      
+      // Double-check with a lightweight fetch 
+      let isFetchSuccessful = false;
+      if (isNetInfoConnected) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 3000);
+          
+          const response = await fetch('https://www.google.com', { 
+            method: 'HEAD',
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeoutId);
+          isFetchSuccessful = response.ok;
+        } catch (error) {
+          console.log('Network fetch check failed:', error);
+          isFetchSuccessful = false;
+        }
+      }
+      
+      // Final connection status
+      const isConnected = isNetInfoConnected && isFetchSuccessful;
+      
       setServerStatus({
-        status: status.isRunning ? 'ready' : 'offline',
-        modelAvailable: status.modelAvailable
+        status: isConnected ? 'ready' : 'offline',
+        modelAvailable: isConnected
       });
       
-      if (status.isRunning) {
+      if (isConnected) {
         Alert.alert(
           'Connected',
           'Internet connection restored. The sign recognition model is now available.',
@@ -433,7 +525,7 @@ export default function HomeScreen() {
                 style={styles.controlButton} 
                 onPress={pickVideo}
               >
-                <MaterialIcons name="photo-library" size={32} color="black" />
+                <MaterialIcons name="photo-library" size={36} color="black" />
               </TouchableOpacity>
 
               <TouchableOpacity 
@@ -442,13 +534,13 @@ export default function HomeScreen() {
               >
                 <MaterialCommunityIcons
                   name={isRecording ? "stop" : "camera-iris"}
-                  size={38}
+                  size={42}
                   color="black"
                 />
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.controlButton} onPress={toggleCameraType}>
-                <MaterialIcons name="flip-camera-ios" size={32} color="black" />
+                <MaterialIcons name="flip-camera-ios" size={36} color="black" />
               </TouchableOpacity>
             </View>
           </View>
@@ -468,29 +560,31 @@ export default function HomeScreen() {
             <TouchableWithoutFeedback onPress={e => e.stopPropagation()}>
               <View style={styles.modalContent}>
                 <Text style={styles.modalResultText}>{recognitionResult}</Text>
-                {confidence !== null && (
-                  <Text style={styles.confidenceText}>
-                    Confidence: {(confidence * 100).toFixed(2)}%
-                  </Text>
-                )}
                 
                 {translatedText && (
                   <View style={styles.translationContainer}>
-                    <Text style={styles.translationLabel}>Vietnamese:</Text>
+                    <Text style={styles.translationLabel}>Tiếng Việt:</Text>
                     <Text style={styles.translationText}>{translatedText}</Text>
                   </View>
                 )}
                 
                 <View style={styles.modalButtonsContainer}>
                   <TouchableOpacity
-                    style={[styles.modalButton, styles.translateButton]}
+                    style={[
+                      styles.modalButton, 
+                      styles.translateButton,
+                      translatedText ? styles.disabledButton : null
+                    ]}
                     onPress={translateToVietnamese}
-                    disabled={isTranslating || !recognitionResult}
+                    disabled={isTranslating || !recognitionResult || translatedText !== null}
                   >
                     {isTranslating ? (
                       <ActivityIndicator size="small" color="#fff" />
                     ) : (
-                      <Text style={styles.modalButtonText}>Translate to Vietnamese</Text>
+                      <Text style={[
+                        styles.modalButtonText,
+                        translatedText ? styles.disabledButtonText : null
+                      ]}>Translate to Vietnamese</Text>
                     )}
                   </TouchableOpacity>
                   
@@ -526,34 +620,34 @@ const styles = StyleSheet.create({
   },
   controlBarContainer: {
     position: 'absolute',
-    bottom: 40,
+    bottom: 30,
     width: '100%',
     alignItems: 'center',
   },
   controlBar: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(231, 161, 167, 0.7)',
+    backgroundColor: 'rgba(231, 161, 167, 1)',
     borderRadius: 30,
-    paddingVertical: 15,
+    paddingVertical: 10,
     paddingHorizontal: 25,
     justifyContent: 'space-between',
     alignItems: 'center',
     width: SCREEN_WIDTH * 0.8,
   },
   controlButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     justifyContent: 'center',
     alignItems: 'center',
   },
   recordButton: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
+    width: 76,
+    height: 76,
+    borderRadius: 38,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'white',
+    backgroundColor: 'rgba(231, 161, 167, 1)',
     marginHorizontal: 15,
   },
   processingOverlay: {
@@ -563,16 +657,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   processingIndicatorContainer: {
-    width: 120,
-    height: 120,
+    width: 90,
+    height: 90,
     justifyContent: 'center',
     alignItems: 'center',
   },
   rotatingRing: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    borderWidth: 8,
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    borderWidth: 6,
     borderColor: 'rgba(231, 161, 167, 0.5)',
     borderBottomColor: 'rgba(231, 161, 167, 1)',
     position: 'absolute',
@@ -695,5 +789,12 @@ const styles = StyleSheet.create({
   reconnectText: {
     color: 'white',
     fontSize: 10,
+  },
+  disabledButton: {
+    backgroundColor: '#555',
+    opacity: 0.7,
+  },
+  disabledButtonText: {
+    color: '#aaa',
   },
 });
