@@ -9,7 +9,7 @@
     "web": "expo start --web",
     "server": "node start-server.js",
     "dev": "concurrently \"expo start\" \"node start-server.js\"",
-    "server:install": "cd server && npm install"
+    "server:install": "node server-install.js"
   },
   "dependencies": {
     "@expo/vector-icons": "^13.0.0",

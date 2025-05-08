@@ -51,4 +51,23 @@ To use a fully trained model:
 2. Place the model.json and shard files in the `server/model/model` directory
 3. Restart the server
 
-The system will automatically load your trained model instead of the fallback one. 
+The system will automatically load your trained model instead of the fallback one.
+
+## Important Note on Large Dependencies
+
+The TensorFlow.js Node.js package contains large binary files (e.g., tensorflow.dll) that exceed GitHub's file size limits. To handle this:
+
+1. These dependencies are excluded from Git via the .gitignore file
+2. You must manually install dependencies after cloning:
+   ```
+   npm run server:install
+   ```
+   or
+   ```
+   cd server && npm install
+   ```
+
+3. For deployment:
+   - Use a deployment platform that supports npm install during build
+   - Or, consider using the TensorFlow.js web version with a smaller footprint
+   - Docker deployments should include the npm install step in the Dockerfile 
